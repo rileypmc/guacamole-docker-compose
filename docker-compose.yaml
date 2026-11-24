@@ -1,66 +1,68 @@
 services:
+  guac-init:
+    image: guacamole/guacamole:1.6.0
+    container_name: guac-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - /opt/guacamole/bin/initdb.sh --postgresql > /init/initdb.sql
+    volumes:
+      - initdb:/init
 
-  # ---------------------------------------------------------
-  # PostgreSQL Database Service
-  # ---------------------------------------------------------
   postgresql:
     image: postgres:15
     container_name: postgres-guac
     restart: unless-stopped
+    depends_on:
+      guac-init:
+        condition: service_completed_successfully
     environment:
-      POSTGRES_DB: ${POSTGRESQL_DATABASE}  # Database name (from .env file)
-      POSTGRES_USER: ${POSTGRESQL_USERNAME}  # Database username
-      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD}  # Database password
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?Password required}
     volumes:
-        # Mount startup script from guacamole container into postgres container to initialize DB schema
-        - "initdb:/docker-entrypoint-initdb.d:ro"
-        # (optional) Persist database data on host to survive container rebuilds:
-       # - "${HOME}/guacamole/postgres-data:/var/lib/postgresql/data"
-
+      - postgres_data:/var/lib/postgresql/data
+      - initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
-        - guac_network
-  
-  # ---------------------------------------------------------
-  # Guacamole Web Application
-  # ---------------------------------------------------------
+      - guac_network
+
   guacamole:
-    image: guacamole/guacamole:1.6.0  # Guacamole web app image
+    image: guacamole/guacamole:1.6.0
     container_name: guacamole
     restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      guacd:
+        condition: service_started
     environment:
-      POSTGRESQL_DATABASE: ${POSTGRESQL_DATABASE}  # guacamole container also needs to be provided with DB name, user and password
-      POSTGRESQL_USERNAME: ${POSTGRESQL_USERNAME}
-      POSTGRESQL_PASSWORD: ${POSTGRESQL_PASSWORD}
-      POSTGRESQL_HOSTNAME: postgresql  # Must match service name above of postgres
-      POSTGRESQL_ENABLED: "true"  # Enable PostgreSQL authentication backend
-      GUACD_HOSTNAME: guacd  # Must match service name below of guacd
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USERNAME: guacamole_user
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD:?Password required}
+      POSTGRESQL_HOSTNAME: postgresql
+      POSTGRESQL_ENABLED: "true"
+      GUACD_HOSTNAME: guacd
     ports:
-        - 8080:8080
-    volumes:
-        # Mount startup script from guacamole container into postgres container to initialize DB schema
-        - "initdb:/opt/guacamole/extensions/guacamole-auth-jdbc/postgresql/schema:ro"
+      - "8085:8080"
     networks:
-        - guac_network
+      - guac_network
 
-  # ---------------------------------------------------------
-  # Guacamole Daemon (guacd)
-  # ---------------------------------------------------------
   guacd:
-    image: guacamole/guacd:1.6.0  # Guacd daemon handles RDP, SSH, VNC protocols
+    image: guacamole/guacd:1.6.0
     container_name: guacd
     restart: unless-stopped
     networks:
       - guac_network
 
-
-# ---------------------------------------------------------
-# Named Volume
-# ---------------------------------------------------------
 volumes:
-    initdb:
+  initdb:
+  postgres_data:
 
-# ---------------------------------------------------------
-# Shared Network
-# ---------------------------------------------------------
 networks:
   guac_network:
+    driver: bridge
